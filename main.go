@@ -2,9 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
 
+	"github.com/auth0-community/go-auth0"
+	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
+	jose "gopkg.in/square/go-jose.v2"
 )
 
 type Product struct {
@@ -14,48 +19,56 @@ type Product struct {
 	Description string
 }
 
-/* We will create our catalog of VR experiences and store them in a slice. */
 var products = []Product{
-	Product{Id: 1, Name: "World of Authcraft", Slug: "world-of-authcraft", Description: "Battle bugs and protect yourself from invaders while you explore a scary world with no security"},
+	Product{Id: 1, Name: "Hover Shooters", Slug: "hover-shooters", Description: "Shoot your way to the top on 14 different hoverboards"},
 	Product{Id: 2, Name: "Ocean Explorer", Slug: "ocean-explorer", Description: "Explore the depths of the sea in this one of a kind underwater experience"},
 	Product{Id: 3, Name: "Dinosaur Park", Slug: "dinosaur-park", Description: "Go back 65 million years in the past and ride a T-Rex"},
 	Product{Id: 4, Name: "Cars VR", Slug: "cars-vr", Description: "Get behind the wheel of the fastest cars in the world."},
 	Product{Id: 5, Name: "Robin Hood", Slug: "robin-hood", Description: "Pick up the bow and arrow and master the art of archery"},
-	Product{Id: 6, Name: "Real World VR", Slug: "real-world-vr", Description: "Explore the seven wonders of the world in VR"}}
+	Product{Id: 6, Name: "Real World VR", Slug: "real-world-vr", Description: "Explore the seven wonders of the world in VR"},
+}
 
 func main() {
 	r := mux.NewRouter()
-	r.Handle("/status", StatusHandler).Methods("GET")
-	r.Handle("/products", ProductsHandler).Methods("GET")
-	r.Handle("/products/{slug}/feedback", AddFeedbackHandler).Methods("POST")
 
-	// Our application will run on port 8080. Here we declare the port and pass in our router.
-	http.ListenAndServe(":8080", r)
+	r.Handle("/", http.FileServer(http.Dir("./views/")))
+	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("./static/"))))
+
+	r.Handle("/products", authMiddleware(ProductsHandler)).Methods("GET")
+	r.Handle("/products/{slug}/feedback", authMiddleware(AddFeedbackHandler)).Methods("POST")
+
+	http.ListenAndServe(":3000", handlers.LoggingHandler(os.Stdout, r))
 }
 
-var NotImplemented = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("Not Implemented"))
-})
+func authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secret := []byte("{YOUR-AUTH0-API-SECRET}")
+		secretProvider := auth0.NewKeyProvider(secret)
+		audience := []string{"{YOUR-AUTH0-API-AUDIENCE}"}
 
-/* The status handler will be invoked when the user calls the /status route
-   It will simply return a string with the message "API is up and running" */
-var StatusHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("API is up and running"))
-})
+		configuration := auth0.NewConfiguration(secretProvider, audience, "https://{YOUR-AUTH0-DOMAIN}.auth0.com/", jose.HS256)
+		validator := auth0.NewValidator(configuration, nil)
 
-/* The products handler will be called when the user makes a GET request to the /products endpoint.
-   This handler will return a list of products available for users to review */
+		token, err := validator.ValidateRequest(r)
+
+		if err != nil {
+			fmt.Println(err)
+			fmt.Println("Token is not valid:", token)
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte("Unauthorized"))
+		} else {
+			next.ServeHTTP(w, r)
+		}
+	})
+}
+
 var ProductsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-	// Here we are converting the slice of products to JSON
 	payload, _ := json.Marshal(products)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(payload))
 })
 
-/* The feedback handler will add either positive or negative feedback to the product
-   We would normally save this data to the database - but for this demo, we'll fake it
-   so that as long as the request is successful and we can match a product to our catalog of products we'll return an OK status. */
 var AddFeedbackHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 	var product Product
 	vars := mux.Vars(r)
@@ -72,6 +85,6 @@ var AddFeedbackHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Re
 		payload, _ := json.Marshal(product)
 		w.Write([]byte(payload))
 	} else {
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		w.Write([]byte("Product Not Found"))
 	}
 })
